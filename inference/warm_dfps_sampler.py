@@ -4,22 +4,11 @@ import torch
 from mmcv.ops import furthest_point_sample
 from torch import Tensor, nn
 
-from warm_dfps_manager import WarmStartManager, fps_refill
+from fps_with_preidx import farthest_point_sample_with_preidx
+from warm_dfps_manager import WarmStartManager
 
 
 class WarmDFPSSampler(nn.Module):
-    """
-    Same call signature as mmcv.ops.points_sampler.DFPSSampler:
-    forward(points, features, npoint) -> (B, npoint) int32 indices.
-    Refer: default_points_sampler.py in mmcv.ops.points_sampler.
-
-    Cold frames (no carried state, or a discontinuity) delegate straight to
-    the real `furthest_point_sample` CUDA op, so they are bit-for-bit
-    identical to stock D-FPS -- only genuinely warm frames take the NumPy
-    continuation path, since mmcv ships no "continue from a seed set" CUDA
-    op (unlike the old vendored 3DSSD TF ops).
-    """
-
     def __init__(self, manager: WarmStartManager):
         super().__init__()
         self.manager = manager
@@ -56,11 +45,11 @@ class WarmDFPSSampler(nn.Module):
             idx = furthest_point_sample(points.contiguous(), npoint)
             S = points[0][idx[0].long()].detach().cpu().numpy()
         else:
-            idx_np = fps_refill(P, res.preidx, npoint)
-            idx = torch.as_tensor(
-                idx_np, dtype=torch.int32, device=points.device
-            ).unsqueeze(0)
-            S = P[idx_np]
+            preidx = torch.as_tensor(
+                res.preidx, dtype=torch.int64, device=points.device)
+            idx0 = farthest_point_sample_with_preidx(points[0], preidx, npoint)
+            idx = idx0.to(torch.int32).unsqueeze(0)
+            S = points[0][idx0].detach().cpu().numpy()
 
         self.manager.commit(S)
         self.last_S = S

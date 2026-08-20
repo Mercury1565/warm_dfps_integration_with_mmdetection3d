@@ -133,28 +133,6 @@ def fps_refill(P: np.ndarray, seed_idx: np.ndarray, num_samples: int, chunk: int
 
 @dataclass
 class StepResult:
-    """What one call to :meth:`WarmStartManager.step` decided.
-
-    preidx          indices into the current cloud to feed the ``preidx``
-                    placeholder (survivors snapped; a single random index when
-                    ``cold``)
-    cold            True when this frame runs as a from-scratch FPS
-    reason          'warm' | 'first-frame' | 'budget-fallback' | 'reset'
-                    | 'seed-deficit' (fixed-K mode only: fewer than K unique
-                    survivors, so the graph's cold branch must run)
-    n_carried       size of the carried sample set (0 on first frame)
-    n_kept          survivors of the validity tests (before snap-dedup)
-    n_dropped       carried samples discarded (vanished / stale / redundant)
-    n_snap_merged   survivors lost to snap collisions — two survivors whose
-                    nearest new-frame points coincide become one seed; the
-                    in-graph refill makes up the difference
-    median_spacing  the frame's length scale (metres): median of the
-                    per-sample local scales when ``range_adaptive=True``
-                    (summary statistic only -- thresholds are per-sample,
-                    not one global value), or the single flat global
-                    spacing itself when ``range_adaptive=False``
-    """
-
     preidx: np.ndarray
     cold: bool
     reason: str
