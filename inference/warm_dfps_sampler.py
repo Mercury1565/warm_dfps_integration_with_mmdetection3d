@@ -36,8 +36,7 @@ class WarmDFPSSampler(nn.Module):
             f"npoint ({npoint}) != manager.num_samples "
             f"({self.manager.num_samples})")
 
-        P = points[0].detach().cpu().numpy()
-        res = self.manager.step(P, transform=self._pending_transform)
+        res = self.manager.step_gpu(points[0], transform=self._pending_transform)
         self.last_result = res
 
         if res.cold:

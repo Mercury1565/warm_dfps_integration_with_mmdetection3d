@@ -43,6 +43,8 @@ __global__ void fps_with_preidx_kernel(int n, int m, int s,
       const float dx = dataset[k * 3 + 0] - x1;
       const float dy = dataset[k * 3 + 1] - y1;
       const float dz = dataset[k * 3 + 2] - z1;
+
+      // squared distance
       const float d = dx * dx + dy * dy + dz * dz;
       if (d < temp[k]) temp[k] = d;
     }
