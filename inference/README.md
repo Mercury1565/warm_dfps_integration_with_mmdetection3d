@@ -102,7 +102,7 @@ python warm_baseline_inference.py \
     --kitti-root ../data/kitti/2011_09_26 \
     --config ../configs/3dssd/3dssd_4x4_kitti-3d-car.py \
     --checkpoint ../configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth \
-    --out-dir results/warm_results \
+    --out-dir results_3/warm_results \
     --no-motion-compensation \
     --no-range-adaptive \
     --overwrite \
@@ -115,7 +115,7 @@ python warm_baseline_inference.py \
     --kitti-root ../data/kitti/2011_09_26 \
     --config ../configs/3dssd/3dssd_4x4_kitti-3d-car.py \
     --checkpoint ../configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth \
-    --out-dir results/warm_results_compensated \
+    --out-dir results_3/warm_results_compensated \
     --overwrite \
     --no-range-adaptive \
     --dump-samples
@@ -127,7 +127,7 @@ python warm_baseline_inference.py \
     --kitti-root ../data/kitti/2011_09_26 \
     --config ../configs/3dssd/3dssd_4x4_kitti-3d-car.py \
     --checkpoint ../configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth \
-    --out-dir results/warm_results_range_adaptive \
+    --out-dir results_3/warm_results_range_adaptive \
     --overwrite \
     --dump-samples
 ```

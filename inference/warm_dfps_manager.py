@@ -133,28 +133,6 @@ def fps_refill(P: np.ndarray, seed_idx: np.ndarray, num_samples: int, chunk: int
 
 @dataclass
 class StepResult:
-    """What one call to :meth:`WarmStartManager.step` decided.
-
-    preidx          indices into the current cloud to feed the ``preidx``
-                    placeholder (survivors snapped; a single random index when
-                    ``cold``)
-    cold            True when this frame runs as a from-scratch FPS
-    reason          'warm' | 'first-frame' | 'budget-fallback' | 'reset'
-                    | 'seed-deficit' (fixed-K mode only: fewer than K unique
-                    survivors, so the graph's cold branch must run)
-    n_carried       size of the carried sample set (0 on first frame)
-    n_kept          survivors of the validity tests (before snap-dedup)
-    n_dropped       carried samples discarded (vanished / stale / redundant)
-    n_snap_merged   survivors lost to snap collisions — two survivors whose
-                    nearest new-frame points coincide become one seed; the
-                    in-graph refill makes up the difference
-    median_spacing  the frame's length scale (metres): median of the
-                    per-sample local scales when ``range_adaptive=True``
-                    (summary statistic only -- thresholds are per-sample,
-                    not one global value), or the single flat global
-                    spacing itself when ``range_adaptive=False``
-    """
-
     preidx: np.ndarray
     cold: bool
     reason: str
@@ -217,14 +195,14 @@ class WarmStartManager:
 
         if P.ndim != 2:
             raise ValueError(f"P must be (N, dims), got {P.shape}")
-        
+
         if P.shape[0] < self.num_samples:
             raise ValueError(f"cloud has {P.shape[0]} points < num_samples "
                              f"({self.num_samples})")
 
         # If we have no carried samples, this frame is a cold start
         if self._S_prev is None:
-            return self._cold(P, self._pending_reason)
+            return self._cold(P.shape[0], self._pending_reason)
 
         # If we have carried samples, this frame is a warm start
         S = self._S_prev
@@ -239,7 +217,7 @@ class WarmStartManager:
         # Compute the occupancy, faith, and snap indices for the carried samples in the current point cloud
         occupancy, faith, snap_idx = _cell_stats(P, S)
 
-        # Compute the local scale for each sample, either adaptively based on nearest 
+        # Compute the local scale for each sample, either adaptively based on nearest
         # neighbor distances or using a flat global median spacing
         if self.range_adaptive:
             uniq_snap, inverse = np.unique(snap_idx, return_inverse=True)
@@ -247,16 +225,78 @@ class WarmStartManager:
         else:
             local_scale = np.full(S.shape[0], _median_nn_spacing(S), dtype=np.float32)  # flat, global
 
+        return self._decide(P.shape[0], S, occupancy, faith, snap_idx, local_scale)
+
+    def step_gpu(self, points, transform: np.ndarray | None = None) -> StepResult:
         """
+        Torch/GPU-resident counterpart of step(): identical decision logic,
+        but occupancy/faith/snap_idx/local_scale are computed on-device via
+        cell_stats_torch, so the full point cloud never has to leave the
+        GPU -- only the small, M-sized results are pulled back to NumPy, at
+        the boundary _decide() and _thin_redundant() need.
+
+        points: (N, dims) float32 CUDA tensor.
+        """
+        import torch
+        from cell_stats_torch import (_cell_stats_torch, _local_nn_distance_torch,
+                                      _median_nn_spacing_torch)
+
+        if points.ndim != 2:
+            raise ValueError(f"points must be (N, dims), got {tuple(points.shape)}")
+        
+        if points.shape[0] < self.num_samples:
+            raise ValueError(f"cloud has {points.shape[0]} points < num_samples "
+                             f"({self.num_samples})")
+
+        if self._S_prev is None:
+            return self._cold(points.shape[0], self._pending_reason)
+
+        S = torch.as_tensor(self._S_prev, device=points.device, dtype=torch.float32)
+
+        if transform is not None:
+            d = S.shape[1]
+            R = torch.as_tensor(np.asarray(transform[:d, :d], dtype=np.float32),
+                                device=points.device)
+            t = torch.as_tensor(np.asarray(transform[:d, d], dtype=np.float32),
+                                device=points.device)
+            S = S @ R.T + t
+
+        occupancy, faith, snap_idx = _cell_stats_torch(points, S)
+
+        if self.range_adaptive:
+            uniq_snap, inverse = torch.unique(snap_idx, return_inverse=True)
+            local_scale = _local_nn_distance_torch(points, uniq_snap)[inverse]
+        else:
+            local_scale = torch.full((S.shape[0],), _median_nn_spacing_torch(S),
+                                     dtype=torch.float32, device=points.device)
+
+        return self._decide(
+            points.shape[0],
+            S.cpu().numpy(),
+            occupancy.cpu().numpy().astype(np.int64),
+            faith.cpu().numpy().astype(np.float32),
+            snap_idx.cpu().numpy().astype(np.int64),
+            local_scale.cpu().numpy().astype(np.float32),
+        )
+
+    def _decide(self, n_points: int, S: np.ndarray, occupancy: np.ndarray,
+               faith: np.ndarray, snap_idx: np.ndarray,
+               local_scale: np.ndarray) -> StepResult:
+        """
+        Shared back half of step()/step_gpu(): given occupancy/faith/
+        snap_idx/local_scale for the carried samples S (computed either on
+        CPU via NumPy or on GPU via cell_stats_torch and converted back),
+        decide survivors and assemble the StepResult.
+
         Three independent gates, each optional via its factor being 0:
             - [occupancy >= min_occupancy] : a sample whose Voronoi cell is empty (nobody nearby claims it) is dead.
-            - [faith <= stale_factor * local_scale] : a sample that drifted farther from any real point than stale_factor local-spacings 
+            - [faith <= stale_factor * local_scale] : a sample that drifted farther from any real point than stale_factor local-spacings
                                                       is stale (default stale_factor=2.0: allow up to ~2 point-spacings of drift).
-            - [_thin_redundant(...)] : declump survivors that are now too close together (separation_factor * local_scale threshold, 
+            - [_thin_redundant(...)] : declump survivors that are now too close together (separation_factor * local_scale threshold,
                                        default half a point-spacing).
         """
-
         keep = occupancy >= self.min_occupancy
+        
         if self.stale_factor > 0:
             keep &= faith <= self.stale_factor * local_scale
         if self.separation_factor > 0 and S.shape[0] > 1:
@@ -269,7 +309,7 @@ class WarmStartManager:
         # If fewer than min_kept_fraction (default 25%) of carried samples survived 
         # the gates above, warm-starting from the survivors isn't worth it, DO IT COLD!!!
         if n_carried and n_kept / n_carried < self.min_kept_fraction:
-            return self._cold(P, "budget-fallback", n_carried=n_carried, n_kept=n_kept)
+            return self._cold(n_points, "budget-fallback", n_carried=n_carried, n_kept=n_kept)
 
         # Two survivors can share a nearest new-frame point; duplicate seeds
         # would waste sample budget, so merge them and let the refill recover.
@@ -293,7 +333,7 @@ class WarmStartManager:
 
             # if dedup drops below K, there's no way to hand back exactly K real seeds, so it's forced cold
             if uniq.size < self.seed_count:
-                return self._cold(P, "seed-deficit", n_carried=n_carried, n_kept=n_kept)
+                return self._cold(n_points, "seed-deficit", n_carried=n_carried, n_kept=n_kept)
 
             # otherwise, truncate to K
             preidx = uniq[: self.seed_count]
@@ -317,11 +357,11 @@ class WarmStartManager:
         
         self._S_prev = S_new.copy()
 
-    def _cold(self, P: np.ndarray, reason: str, n_carried: int = 0, n_kept: int = 0) -> StepResult:
+    def _cold(self, n_points: int, reason: str, n_carried: int = 0, n_kept: int = 0) -> StepResult:
         """
         The uniform fallback for every "give up on warm-start" path
         """
-        first = np.array([self._rng.integers(P.shape[0])], dtype=np.int64)
+        first = np.array([self._rng.integers(n_points)], dtype=np.int64)
         return StepResult(
             preidx=first, cold=True, reason=reason,
             n_carried=n_carried, n_kept=n_kept,
