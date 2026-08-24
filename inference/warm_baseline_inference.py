@@ -112,6 +112,18 @@ def main():
     else:
         print('Ego-motion compensation disabled (--no-motion-compensation)')
 
+    # Warm up CUDA/cuDNN/kernel JIT before timing; reset after so the
+    # throwaway call's carried state doesn't leak into the real run.
+    warmup_frames = find_frames(drive_dirs[0])
+    if warmup_frames:
+        t_warmup = time.time()
+        inference_detector(model, str(warmup_frames[0]))
+        print(f'Warm-up inference: {time.time() - t_warmup:.3f}s '
+              f'(not counted in per-frame timing)')
+        warm_sampler.reset()
+        if oxts_tracker is not None:
+            oxts_tracker.reset()
+
     manifest = []
     total_frames = 0
     t_start = time.time()

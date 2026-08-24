@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from mmdet3d.apis import inference_detector, init_model
 
-from logging_dfps_sampler import LoggingDFPSSampler
+from inference.helpers.logging_dfps_sampler import LoggingDFPSSampler
 
 
 def find_drive_dirs(kitti_root: Path):
@@ -85,7 +85,10 @@ def main():
     # timing isn't inflated by one-time init cost.
     warmup_frames = find_frames(drive_dirs[0])
     if warmup_frames:
+        t_warmup = time.time()
         inference_detector(model, str(warmup_frames[0]))
+        print(f'Warm-up inference: {time.time() - t_warmup:.3f}s '
+              f'(not counted in per-frame timing)')
 
     manifest = []
     total_frames = 0

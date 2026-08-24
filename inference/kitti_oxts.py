@@ -1,13 +1,5 @@
-"""Turns consecutive KITTI raw oxts (GPS/IMU) packets into the frame-to-frame
-relative ego-motion transform that WarmStartManager.step(P, transform=...)
-expects, so carried samples get checked against the new cloud at the
-position they actually now occupy instead of their stale previous-frame
-position. Mirrors the KITTI devkit's convertOxtsToPose.m conversion.
-"""
 from __future__ import annotations
-
 from pathlib import Path
-
 import numpy as np
 
 _EARTH_RADIUS = 6378137.0  # WGS84 equatorial radius (m); matches the devkit's Mercator projection
@@ -28,9 +20,12 @@ def _rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
     cy, sy = np.cos(yaw), np.sin(yaw)
+
     Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+
+    # returns Rz @ Ry @ Rx, which is the rotation matrix from roll, pitch, yaw angles
     return Rz @ Ry @ Rx
 
 
@@ -44,9 +39,11 @@ def parse_oxts_packet(line: str) -> dict:
 
 
 def oxts_to_pose(packet: dict, scale: float) -> np.ndarray:
-    """4x4 homogeneous pose mapping IMU-frame coordinates at this frame into
+    """
+    4x4 homogeneous pose mapping IMU-frame coordinates at this frame into
     a sequence-anchored world frame (anchored at whichever frame `scale` was
-    derived from -- normally the drive's first frame, per the devkit)."""
+    derived from -- normally the drive's first frame, per the devkit).
+    """
     tx, ty = _latlon_to_mercator(packet['lat'], packet['lon'], scale)
     tz = packet['alt']
     R = _rotation_from_rpy(packet['roll'], packet['pitch'], packet['yaw'])
@@ -57,9 +54,11 @@ def oxts_to_pose(packet: dict, scale: float) -> np.ndarray:
 
 
 def parse_imu_to_velo_calib(path) -> np.ndarray:
-    """calib_imu_to_velo.txt -> 4x4 homogeneous transform mapping IMU/GPS
+    """
+    calib_imu_to_velo.txt -> 4x4 homogeneous transform mapping IMU/GPS
     coordinates into the velodyne frame (the R, T documented by the KITTI
-    raw-data devkit)."""
+    raw-data devkit).
+    """
     R = T = None
     with open(path) as f:
         for line in f:
@@ -67,8 +66,10 @@ def parse_imu_to_velo_calib(path) -> np.ndarray:
                 R = np.array([float(x) for x in line.split()[1:]], dtype=np.float64).reshape(3, 3)
             elif line.startswith('T:'):
                 T = np.array([float(x) for x in line.split()[1:]], dtype=np.float64)
+                
     if R is None or T is None:
         raise ValueError(f'{path}: missing R:/T: lines')
+    
     velo_T_imu = np.eye(4, dtype=np.float64)
     velo_T_imu[:3, :3] = R
     velo_T_imu[:3, 3] = T
@@ -109,5 +110,6 @@ class OxtsPoseTracker:
                      @ np.linalg.inv(pose_curr)
                      @ self._pose_prev
                      @ self.imu_T_velo)
+        
         self._pose_prev = pose_curr
         return transform

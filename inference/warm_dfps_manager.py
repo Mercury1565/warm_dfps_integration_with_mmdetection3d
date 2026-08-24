@@ -1,134 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from email.policy import default
+from inference.helpers.warm_dfps_helpers import sqdist, cell_stats, local_nn_distance, median_nn_spacing
+from inference.helpers.thin_redundant import thin_redundant
+from inference.helpers.fps_refill import fps_refill
 import numpy as np
 
 
-def _sqdist(A: np.ndarray, B: np.ndarray) -> np.ndarray:
-    """
-    All-pairs squared distances via ||a-b||² = ||a||² + ||b||² − 2a·b.
-    """
-    d2 = (A * A).sum(axis=1)[:, None] + (B * B).sum(axis=1)[None, :] - 2.0 * (A @ B.T)
-    np.maximum(d2, 0.0, out=d2)
-    return d2
 
-def _cell_stats(P: np.ndarray, S: np.ndarray, chunk: int = 4096):
-    """
-    One chunked sweep of point-to-sample distances, returning everything the
-    classifier *and* the snap step need:
-
-        occupancy[m]  — cloud points whose nearest sample is m (Voronoi count)
-        faith[m]      — distance from sample m to its nearest cloud point
-        snap_idx[m]   — index (into P) of that nearest cloud point
-    """
-    P = np.ascontiguousarray(P, dtype=np.float32)
-    S = np.ascontiguousarray(S, dtype=np.float32)
-    N, M = P.shape[0], S.shape[0]
-
-    occupancy = np.zeros(M, dtype=np.int64)
-    faith_sq = np.full(M, np.inf, dtype=np.float32)
-    snap_idx = np.zeros(M, dtype=np.int64)
-
-    for lo in range(0, N, chunk):
-        d2 = _sqdist(P[lo : lo + chunk], S)
-        occupancy += np.bincount(d2.argmin(axis=1), minlength=M)
-
-        col_min = d2.min(axis=0)
-        closer = col_min < faith_sq
-        faith_sq[closer] = col_min[closer]
-        snap_idx[closer] = d2.argmin(axis=0)[closer] + lo
-
-    return occupancy, np.sqrt(faith_sq), snap_idx
-
-
-def _median_nn_spacing(S: np.ndarray) -> float:
-    """
-    Median nearest-neighbour distance among the samples — the flat, global
-    length scale used when range_adaptive=False.
-    """
-    if S.shape[0] < 2:
-        return 0.0
-    S = np.ascontiguousarray(S, dtype=np.float32)
-    d2 = _sqdist(S, S)
-    np.fill_diagonal(d2, np.inf)
-    return float(np.median(np.sqrt(d2.min(axis=1))))
-
-
-def _local_nn_distance(P: np.ndarray, query_idx: np.ndarray | None = None, chunk: int = 4096) -> np.ndarray:
-    """
-    For a chosen set of query points (query_idx) drawn from P, 
-    computes each query's nearest-neighbor distance to the rest of P 
-    """
-    P = np.ascontiguousarray(P, dtype=np.float32)
-    N = P.shape[0]
-    idx = np.arange(N) if query_idx is None else np.ascontiguousarray(query_idx)
-    Q = P[idx]
-    out = np.empty(idx.shape[0], dtype=np.float32)
-    for lo in range(0, idx.shape[0], chunk):
-        hi = min(lo + chunk, idx.shape[0])
-        d2 = _sqdist(Q[lo:hi], P)
-        d2[np.arange(hi - lo), idx[lo:hi]] = np.inf  # exclude each query's own point
-        out[lo:hi] = np.sqrt(d2.min(axis=1))
-    return out
-
-
-def _thin_redundant(S: np.ndarray, keep: np.ndarray, occupancy: np.ndarray, sep_sq: np.ndarray) -> np.ndarray:
-    """
-    Greedily drop the lesser of any too-close pair of kept samples.
-    ``sep_sq[i]`` is sample i's own (locally-adaptive) squared separation
-    threshold.
-    """
-    S = np.ascontiguousarray(S, dtype=np.float32)
-    d2 = _sqdist(S, S)
-    np.fill_diagonal(d2, np.inf)
-    for i in np.argsort(occupancy, kind="stable"):
-        if not keep[i]:
-            continue
-        close = (d2[i] < sep_sq[i]) & keep
-        close[i] = False
-        if close.any():
-            keep[i] = False
-    return keep
-
-
-def fps_refill(P: np.ndarray, seed_idx: np.ndarray, num_samples: int, chunk: int = 4096) -> np.ndarray:
-    """
-    Greedy FPS over ``P`` continued from already-selected ``seed_idx``.
-
-    NumPy reference of ``farthest_point_sample_with_preidx``: seeds the
-    min-distance field with ``P[seed_idx]``, then repeatedly picks the cloud
-    point farthest from everything selected so far. Returns ``num_samples``
-    indices into ``P``, seeds first.
-    """
-    P = np.ascontiguousarray(P, dtype=np.float32)
-    N = P.shape[0]
-    seed_idx = np.asarray(seed_idx, dtype=np.int64).ravel()
-
-    if seed_idx.size == 0:
-        raise ValueError("fps_refill needs at least one seed (cold start feeds "
-                         "one random index — see module docstring).")
-    if num_samples > N:
-        raise ValueError(f"num_samples ({num_samples}) must be <= N ({N}).")
-
-    have = min(seed_idx.size, num_samples)
-    out = np.empty(num_samples, dtype=np.int64)
-    out[:have] = seed_idx[:have]
-    if have == num_samples:
-        return out
-
-    seeds = P[out[:have]]
-    min_dist = np.empty(N, dtype=np.float32)
-    for lo in range(0, N, chunk):
-        min_dist[lo : lo + chunk] = np.sqrt(
-            _sqdist(P[lo : lo + chunk], seeds).min(axis=1))
-
-    while have < num_samples:
-        j = int(min_dist.argmax())
-        out[have] = j
-        np.minimum(min_dist, np.linalg.norm(P - P[j], axis=1), out=min_dist)
-        have += 1
-
-    return out
 
 
 @dataclass
@@ -215,31 +93,45 @@ class WarmStartManager:
             S = S @ R.T + t
 
         # Compute the occupancy, faith, and snap indices for the carried samples in the current point cloud
-        occupancy, faith, snap_idx = _cell_stats(P, S)
+        occupancy, faith, snap_idx = cell_stats(P, S)
 
         # Compute the local scale for each sample, either adaptively based on nearest
         # neighbor distances or using a flat global median spacing
         if self.range_adaptive:
             uniq_snap, inverse = np.unique(snap_idx, return_inverse=True)
-            local_scale = _local_nn_distance(P, uniq_snap)[inverse]  # per-sample
+            local_scale = local_nn_distance(P, uniq_snap)[inverse]  # per-sample
         else:
-            local_scale = np.full(S.shape[0], _median_nn_spacing(S), dtype=np.float32)  # flat, global
+            local_scale = np.full(S.shape[0], median_nn_spacing(S), dtype=np.float32)  # flat, global
 
-        return self._decide(P.shape[0], S, occupancy, faith, snap_idx, local_scale)
+        keep = self._compute_keep(S, occupancy, faith, local_scale)
+        return self._decide(P.shape[0], S, keep, occupancy, snap_idx, local_scale)
+
+    def _compute_keep(self, S: np.ndarray, occupancy: np.ndarray, faith: np.ndarray,
+                      local_scale: np.ndarray) -> np.ndarray:
+        """NumPy path for the three survival gates. step_gpu() computes the
+        GPU-tensor equivalent itself rather than calling this."""
+        keep = occupancy >= self.min_occupancy
+        if self.stale_factor > 0:
+            keep &= faith <= self.stale_factor * local_scale
+        if self.separation_factor > 0 and S.shape[0] > 1:
+            sep_sq = (self.separation_factor * local_scale) ** 2
+            keep = thin_redundant(S, keep, occupancy, sep_sq)
+        return keep
 
     def step_gpu(self, points, transform: np.ndarray | None = None) -> StepResult:
         """
         Torch/GPU-resident counterpart of step(): identical decision logic,
-        but occupancy/faith/snap_idx/local_scale are computed on-device via
-        cell_stats_torch, so the full point cloud never has to leave the
-        GPU -- only the small, M-sized results are pulled back to NumPy, at
-        the boundary _decide() and _thin_redundant() need.
+        but occupancy/faith/snap_idx/local_scale and the keep mask (incl.
+        declumping, via thin_redundant_gpu) are computed on-device, so the
+        full point cloud never has to leave the GPU -- only the small,
+        M-sized results are pulled back to NumPy for _decide()'s tail.
 
         points: (N, dims) float32 CUDA tensor.
         """
         import torch
-        from cell_stats_torch import (_cell_stats_torch, _local_nn_distance_torch,
-                                      _median_nn_spacing_torch)
+        from inference.helpers.warm_dfps_helpers_gpu import (_cell_stats_torch, _local_nn_distance_torch,
+                                                              _median_nn_spacing_torch)
+        from inference.helpers.thin_redundant_gpu import thin_redundant_gpu
 
         if points.ndim != 2:
             raise ValueError(f"points must be (N, dims), got {tuple(points.shape)}")
@@ -270,39 +162,28 @@ class WarmStartManager:
             local_scale = torch.full((S.shape[0],), _median_nn_spacing_torch(S),
                                      dtype=torch.float32, device=points.device)
 
+        keep = occupancy >= self.min_occupancy
+        if self.stale_factor > 0:
+            keep = keep & (faith <= self.stale_factor * local_scale)
+        if self.separation_factor > 0 and S.shape[0] > 1:
+            sep_sq = (self.separation_factor * local_scale) ** 2
+            keep = thin_redundant_gpu(S, keep, occupancy, sep_sq)
+
         return self._decide(
             points.shape[0],
             S.cpu().numpy(),
+            keep.cpu().numpy(),
             occupancy.cpu().numpy().astype(np.int64),
-            faith.cpu().numpy().astype(np.float32),
             snap_idx.cpu().numpy().astype(np.int64),
             local_scale.cpu().numpy().astype(np.float32),
         )
 
-    def _decide(self, n_points: int, S: np.ndarray, occupancy: np.ndarray,
-               faith: np.ndarray, snap_idx: np.ndarray,
+    def _decide(self, n_points: int, S: np.ndarray, keep: np.ndarray,
+               occupancy: np.ndarray, snap_idx: np.ndarray,
                local_scale: np.ndarray) -> StepResult:
-        """
-        Shared back half of step()/step_gpu(): given occupancy/faith/
-        snap_idx/local_scale for the carried samples S (computed either on
-        CPU via NumPy or on GPU via cell_stats_torch and converted back),
-        decide survivors and assemble the StepResult.
-
-        Three independent gates, each optional via its factor being 0:
-            - [occupancy >= min_occupancy] : a sample whose Voronoi cell is empty (nobody nearby claims it) is dead.
-            - [faith <= stale_factor * local_scale] : a sample that drifted farther from any real point than stale_factor local-spacings
-                                                      is stale (default stale_factor=2.0: allow up to ~2 point-spacings of drift).
-            - [_thin_redundant(...)] : declump survivors that are now too close together (separation_factor * local_scale threshold,
-                                       default half a point-spacing).
-        """
-        keep = occupancy >= self.min_occupancy
-        
-        if self.stale_factor > 0:
-            keep &= faith <= self.stale_factor * local_scale
-        if self.separation_factor > 0 and S.shape[0] > 1:
-            sep_sq = (self.separation_factor * local_scale) ** 2
-            keep = _thin_redundant(S, keep, occupancy, sep_sq)
-
+        """Shared tail of step()/step_gpu(): given the already-decided keep
+        mask (from _compute_keep() on CPU, or the GPU-tensor equivalent in
+        step_gpu()), finish the decision and assemble the StepResult."""
         n_kept = int(keep.sum())
         n_carried = S.shape[0]
 

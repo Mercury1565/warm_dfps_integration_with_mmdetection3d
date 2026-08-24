@@ -4,8 +4,8 @@ import torch
 from mmcv.ops import furthest_point_sample
 from torch import Tensor, nn
 
-from fps_with_preidx import farthest_point_sample_with_preidx
-from warm_dfps_manager import WarmStartManager
+from inference.helpers.fps_with_preidx import farthest_point_sample_with_preidx
+from inference.warm_dfps_manager import WarmStartManager
 
 
 class WarmDFPSSampler(nn.Module):
