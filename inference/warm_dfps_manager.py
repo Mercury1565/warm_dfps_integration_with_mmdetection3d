@@ -164,13 +164,18 @@ class WarmStartManager:
             sep_sq = (self.separation_factor * local_scale) ** 2
             keep = thin_redundant_gpu(S, keep, occupancy, sep_sq)
 
+        # Pack same-dtype tensors before crossing to CPU
+        M = S.shape[0]
+        float_packed = torch.cat([S.reshape(-1), local_scale]).cpu().numpy()
+        int_packed = torch.cat([occupancy, snap_idx, keep.to(torch.int64)]).cpu().numpy()
+
         return self._decide(
             points.shape[0],
-            S.cpu().numpy(),
-            keep.cpu().numpy(),
-            occupancy.cpu().numpy().astype(np.int64),
-            snap_idx.cpu().numpy().astype(np.int64),
-            local_scale.cpu().numpy().astype(np.float32),
+            float_packed[:3 * M].reshape(M, 3),
+            int_packed[2 * M:].astype(bool),
+            int_packed[:M].astype(np.int64),
+            int_packed[M:2 * M].astype(np.int64),
+            float_packed[3 * M:].astype(np.float32),
         )
 
     def _decide(self, n_points: int, S: np.ndarray, keep: np.ndarray,
