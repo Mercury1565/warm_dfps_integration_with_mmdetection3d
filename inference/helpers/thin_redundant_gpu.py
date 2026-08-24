@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.cpp_extension import load
 
-from .warm_dfps_helpers_gpu import _sqdist_torch
+from .warm_dfps_helpers_gpu import sqdist_torch
 
 _CSRC = Path(__file__).parent.parent / "csrc"
 
@@ -45,7 +45,7 @@ def thin_redundant_gpu(S: torch.Tensor, keep: torch.Tensor, occupancy: torch.Ten
     if S.dtype != torch.float32:
         S = S.float()
 
-    d2 = _sqdist_torch(S, S)
+    d2 = sqdist_torch(S, S)
     d2.fill_diagonal_(float("inf"))
     d2 = d2.contiguous()
 

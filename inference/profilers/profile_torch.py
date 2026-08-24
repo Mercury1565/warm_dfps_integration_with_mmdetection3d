@@ -30,10 +30,10 @@ def frame_seed(drive_name: str, frame_stem: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kitti-root', default='data/kitti/2011_09_26')
-    parser.add_argument('--config', default='configs/3dssd/3dssd_4x4_kitti-3d-car.py')
+    parser.add_argument('--kitti-root', default='../../data/kitti/2011_09_26')
+    parser.add_argument('--config', default='../../configs/3dssd/3dssd_4x4_kitti-3d-car.py')
     parser.add_argument('--checkpoint',
-                        default='configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth')
+                        default='../../configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth')
     parser.add_argument('--drive', default='2011_09_26_drive_0001_sync')
     parser.add_argument('--n-frames', type=int, default=6,
                         help='Total frames to run and profile. A separate '

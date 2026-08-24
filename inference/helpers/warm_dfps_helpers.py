@@ -15,9 +15,9 @@ def cell_stats(P: np.ndarray, S: np.ndarray, chunk: int = 4096):
     One chunked sweep of point-to-sample distances, returning everything the
     classifier *and* the snap step need:
 
-        occupancy[m]  — cloud points whose nearest sample is m (Voronoi count)
-        faith[m]      — distance from sample m to its nearest cloud point
-        snap_idx[m]   — index (into P) of that nearest cloud point
+        occupancy[m] — cloud points whose nearest sample is m (Voronoi count)
+        faith[m]     — distance from sample m to its nearest cloud point
+        snap_idx[m]  — index (into P) of that nearest cloud point
     """
     P = np.ascontiguousarray(P, dtype=np.float32)
     S = np.ascontiguousarray(S, dtype=np.float32)

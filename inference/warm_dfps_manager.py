@@ -5,10 +5,6 @@ from inference.helpers.thin_redundant import thin_redundant
 from inference.helpers.fps_refill import fps_refill
 import numpy as np
 
-
-
-
-
 @dataclass
 class StepResult:
     preidx: np.ndarray
@@ -129,8 +125,7 @@ class WarmStartManager:
         points: (N, dims) float32 CUDA tensor.
         """
         import torch
-        from inference.helpers.warm_dfps_helpers_gpu import (_cell_stats_torch, _local_nn_distance_torch,
-                                                              _median_nn_spacing_torch)
+        from inference.helpers.warm_dfps_helpers_gpu import (cell_stats_torch, local_nn_distance_torch, median_nn_spacing_torch)
         from inference.helpers.thin_redundant_gpu import thin_redundant_gpu
 
         if points.ndim != 2:
@@ -153,13 +148,13 @@ class WarmStartManager:
                                 device=points.device)
             S = S @ R.T + t
 
-        occupancy, faith, snap_idx = _cell_stats_torch(points, S)
+        occupancy, faith, snap_idx = cell_stats_torch(points, S)
 
         if self.range_adaptive:
             uniq_snap, inverse = torch.unique(snap_idx, return_inverse=True)
-            local_scale = _local_nn_distance_torch(points, uniq_snap)[inverse]
+            local_scale = local_nn_distance_torch(points, uniq_snap)[inverse]
         else:
-            local_scale = torch.full((S.shape[0],), _median_nn_spacing_torch(S),
+            local_scale = torch.full((S.shape[0],), median_nn_spacing_torch(S),
                                      dtype=torch.float32, device=points.device)
 
         keep = occupancy >= self.min_occupancy
@@ -181,9 +176,11 @@ class WarmStartManager:
     def _decide(self, n_points: int, S: np.ndarray, keep: np.ndarray,
                occupancy: np.ndarray, snap_idx: np.ndarray,
                local_scale: np.ndarray) -> StepResult:
-        """Shared tail of step()/step_gpu(): given the already-decided keep
+        """
+        Shared tail of step()/step_gpu(): given the already-decided keep
         mask (from _compute_keep() on CPU, or the GPU-tensor equivalent in
-        step_gpu()), finish the decision and assemble the StepResult."""
+        step_gpu()), finish the decision and assemble the StepResult.
+        """
         n_kept = int(keep.sum())
         n_carried = S.shape[0]
 
