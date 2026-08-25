@@ -102,7 +102,7 @@ python warm_baseline_inference.py \
     --kitti-root ../data/kitti/2011_09_26 \
     --config ../configs/3dssd/3dssd_4x4_kitti-3d-car.py \
     --checkpoint ../configs/3dssd/3dssd_4x4_kitti-3d-car_20210818_203828-b89c8fc4.pth \
-    --out-dir results_5/warm_results \
+    --out-dir results_6/warm_results \
     --no-motion-compensation \
     --no-range-adaptive \
     --overwrite \
@@ -277,7 +277,7 @@ Single explicit frame:
 python plot_bev.py 
     --kitti-root ../data/kitti/2011_09_26 \
     --baseline-dir results/baseline_results \
-    --warm-dir results/warm_results_range_adaptive \
+    --warm-dir results_5/warm_results \
     --drive 2011_09_26_drive_0017_sync \
     --frame 0000000087 \
     --show-scores --min-score 0.3 --out-dir bev_plots

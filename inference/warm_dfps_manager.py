@@ -138,7 +138,10 @@ class WarmStartManager:
         if self._S_prev is None:
             return self._cold(points.shape[0], self._pending_reason)
 
-        S = torch.as_tensor(self._S_prev, device=points.device, dtype=torch.float32)
+        if isinstance(self._S_prev, torch.Tensor):
+            S = self._S_prev.to(device=points.device, dtype=torch.float32)
+        else:
+            S = torch.as_tensor(self._S_prev, device=points.device, dtype=torch.float32)
 
         if transform is not None:
             d = S.shape[1]
@@ -164,19 +167,7 @@ class WarmStartManager:
             sep_sq = (self.separation_factor * local_scale) ** 2
             keep = thin_redundant_gpu(S, keep, occupancy, sep_sq)
 
-        # Pack same-dtype tensors before crossing to CPU
-        M = S.shape[0]
-        float_packed = torch.cat([S.reshape(-1), local_scale]).cpu().numpy()
-        int_packed = torch.cat([occupancy, snap_idx, keep.to(torch.int64)]).cpu().numpy()
-
-        return self._decide(
-            points.shape[0],
-            float_packed[:3 * M].reshape(M, 3),
-            int_packed[2 * M:].astype(bool),
-            int_packed[:M].astype(np.int64),
-            int_packed[M:2 * M].astype(np.int64),
-            float_packed[3 * M:].astype(np.float32),
-        )
+        return self._decide_gpu(points.shape[0], S, keep, occupancy, snap_idx, local_scale)
 
     def _decide(self, n_points: int, S: np.ndarray, keep: np.ndarray,
                occupancy: np.ndarray, snap_idx: np.ndarray,
@@ -227,6 +218,51 @@ class WarmStartManager:
             n_snap_merged=n_merged, median_spacing=float(np.median(local_scale)),
         )
 
+    def _decide_gpu(self, n_points: int, S, keep, occupancy, snap_idx,
+                    local_scale) -> StepResult:
+        """
+        Torch-tensor counterpart of _decide(): stays GPU-resident
+        throughout, including `preidx` in the returned StepResult -- only
+        small Python scalars (n_kept, median_spacing, ...) cross back to
+        CPU, never arrays.
+        """
+        import torch
+
+        n_kept = int(keep.sum().item())
+        n_carried = S.shape[0]
+
+        if n_carried and n_kept / n_carried < self.min_kept_fraction:
+            return self._cold(n_points, "budget-fallback", n_carried=n_carried, n_kept=n_kept)
+
+        if self.seed_count is None:
+            preidx = torch.unique(snap_idx[keep])
+            n_merged = n_kept - preidx.numel()
+        else:
+            order = torch.argsort(-occupancy[keep], stable=True)
+            snapped = snap_idx[keep][order]
+
+            # First occurrence (by rank position) of each unique value:
+            # stable-sort by value (ties keep relative rank order), take
+            # each run's first element's original position, then restore
+            # rank order -- torch.unique has no return_index equivalent.
+            sorted_snapped, sort_idx = torch.sort(snapped, stable=True)
+            is_first = torch.ones_like(sorted_snapped, dtype=torch.bool)
+            is_first[1:] = sorted_snapped[1:] != sorted_snapped[:-1]
+            first_pos = torch.sort(sort_idx[is_first]).values
+            uniq = snapped[first_pos]
+            n_merged = n_kept - uniq.numel()
+
+            if uniq.numel() < self.seed_count:
+                return self._cold(n_points, "seed-deficit", n_carried=n_carried, n_kept=n_kept)
+            preidx = uniq[: self.seed_count]
+
+        return StepResult(
+            preidx=preidx, cold=False, reason="warm",
+            n_carried=n_carried, n_kept=n_kept, n_dropped=n_carried - n_kept,
+            n_snap_merged=n_merged,
+            median_spacing=float(torch.quantile(local_scale, 0.5).item()),
+        )
+
     def commit(self, S_new: np.ndarray) -> None:
         """
         Store this frame's final sample positions ((M, dims)) as next frame's
@@ -239,6 +275,15 @@ class WarmStartManager:
                              f"positions, got {S_new.shape}")
         
         self._S_prev = S_new.copy()
+
+    def commit_gpu(self, S_new) -> None:
+        """GPU-resident counterpart of commit(): stores S_new (a CUDA
+        tensor) directly, no NumPy round-trip -- so step_gpu() doesn't need
+        to re-upload it next frame."""
+        if S_new.ndim != 2 or S_new.shape[0] != self.num_samples:
+            raise ValueError(f"expected ({self.num_samples}, dims) sample "
+                             f"positions, got {tuple(S_new.shape)}")
+        self._S_prev = S_new.detach().clone()
 
     def _cold(self, n_points: int, reason: str, n_carried: int = 0, n_kept: int = 0) -> StepResult:
         """

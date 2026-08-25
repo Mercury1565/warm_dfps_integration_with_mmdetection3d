@@ -19,9 +19,11 @@ Usage:
     # to one drive with --drive) -- generates one PNG per frame, so this can
     # be slow/disk-heavy over a full multi-thousand-frame drive
     python plot_bev.py \
-        --kitti-root data/kitti/2011_09_26 \
-        --baseline-dir bev_baseline_results --warm-dir bev_warm_results \
-        --all-frames --out-dir bev_plots_all
+        --kitti-root ../../data/kitti/2011_09_26 \
+        --baseline-dir ../results/baseline_results \
+        --warm-dir ../results_6/warm_results \
+        --drive 2011_09_26_drive_0001_sync --frame 0000000040 0000000041 0000000042 0000000043 0000000044 \
+        --out-dir bev_plots_all
 """
 from __future__ import annotations
 

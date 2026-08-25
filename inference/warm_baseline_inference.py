@@ -165,7 +165,7 @@ def main():
             res = warm_sampler.last_result
 
             if args.dump_samples:
-                n_seed = 0 if res.cold else int(res.preidx.size)
+                n_seed = 0 if res.cold else len(res.preidx)
                 np.savez(drive_out / f'{frame_path.stem}_samples.npz',
                          S=warm_sampler.last_S, n_seed=n_seed)
 

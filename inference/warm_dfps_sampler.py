@@ -42,14 +42,13 @@ class WarmDFPSSampler(nn.Module):
         if res.cold:
             # Bit-for-bit stock D-FPS: real op, no NumPy involved.
             idx = furthest_point_sample(points.contiguous(), npoint)
-            S = points[0][idx[0].long()].detach().cpu().numpy()
+            S = points[0][idx[0].long()].detach()
         else:
-            preidx = torch.as_tensor(
-                res.preidx, dtype=torch.int64, device=points.device)
-            idx0 = farthest_point_sample_with_preidx(points[0], preidx, npoint)
+            # res.preidx is already a GPU tensor from step_gpu() -- no re-upload needed.
+            idx0 = farthest_point_sample_with_preidx(points[0], res.preidx, npoint)
             idx = idx0.to(torch.int32).unsqueeze(0)
-            S = points[0][idx0].detach().cpu().numpy()
+            S = points[0][idx0].detach()
 
-        self.manager.commit(S)
-        self.last_S = S
+        self.manager.commit_gpu(S)
+        self.last_S = S.cpu().numpy()
         return idx
